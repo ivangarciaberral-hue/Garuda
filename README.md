@@ -4,6 +4,8 @@
 [![Hardware](https://img.shields.io/badge/Hardware-Arduino_Uno_Q-blue.svg)](#)
 [![AI](https://img.shields.io/badge/Edge_AI-Edge_Impulse-orange.svg)](#)
 [![IoT](https://img.shields.io/badge/IoT-Smart_City-green.svg)](#)
+[![IA](https://studio.edgeimpulse.com/public/991569/live) (#)]
+[![IA](https://studio.edgeimpulse.com/public/991753/live) (#)]
 
 **Garuda** is an urban infrastructure technology initiative based on IoT (Internet of Things), designed specifically for the Barcelona of the future. Its main objective is to monitor, manage, and balance the city's avian ecosystem acting on three simultaneous fronts: real-time data collection, controlling the expansion of invasive exotic species, and actively promoting the recovery and reproduction of displaced native fauna.
 
