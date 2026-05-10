@@ -1,176 +1,147 @@
 // SPDX-FileCopyrightText: Copyright (C) ARDUINO SRL (http://www.arduino.cc)
 //
 // SPDX-License-Identifier: MPL-2.0
+//
 
-const recentDetectionsElement = document.getElementById('recentDetections');
-const feedbackContentElement = document.getElementById('feedback-content');
-const MAX_RECENT_SCANS = 5;
-let scans = [];
-const socket = io(`http://${window.location.host}`); // Initialize socket.io connection
-let errorContainer = document.getElementById('error-container');
+// ── Socket.IO ────────────────────────────────────────────────
+const socket = io(`http://${window.location.host}`);
 
-// Start the application
+// ── Contador interno para IDs de detección en tiempo real ───
+let _rtDetCount = 0;
+
+// ── Inicialización principal ──────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     initSocketIO();
     initializeConfidenceSlider();
-    updateFeedback(null);
-    renderDetections();
-
-    // Popover logic
-    const confidencePopoverText = "Minimum confidence score for detected objects. Lower values show more results but may include false positives.";
-    const feedbackPopoverText = "When the camera detects an object like cat, cell phone, clock, cup, dog or potted plant, a picture and a message will be shown here.";
-
-    document.querySelectorAll('.info-btn.confidence').forEach(img => {
-        const popover = img.nextElementSibling;
-        img.addEventListener('mouseenter', () => {
-            popover.textContent = confidencePopoverText;
-            popover.style.display = 'block';
-        });
-        img.addEventListener('mouseleave', () => {
-            popover.style.display = 'none';
-        });
-    });
-
-    document.querySelectorAll('.info-btn.feedback').forEach(img => {
-        const popover = img.nextElementSibling;
-        img.addEventListener('mouseenter', () => {
-            popover.textContent = feedbackPopoverText;
-            popover.style.display = 'block';
-        });
-        img.addEventListener('mouseleave', () => {
-            popover.style.display = 'none';
-        });
-    });
 });
 
+// ── Conexión Socket.IO ────────────────────────────────────────
 function initSocketIO() {
+
     socket.on('connect', () => {
-        if (errorContainer) {
-            errorContainer.style.display = 'none';
-            errorContainer.textContent = '';
-        }
+        setSysStatus('online');
     });
 
     socket.on('disconnect', () => {
-        if (errorContainer) {
-            errorContainer.textContent = 'Connection to the board lost. Please check the connection.';
-            errorContainer.style.display = 'block';
+        setSysStatus('offline');
+    });
+
+    /**
+     * Evento de detección enviado por el Arduino.
+     * Formato esperado:
+     *   { content: 'cotorra'|'gorrion', confidence: 0.0–1.0, timestamp: ISO_string }
+     *
+     * Se traduce al modelo de BirdWatch v5 y se añade al array
+     * global `detections`, actualizando el mapa y la interfaz.
+     */
+    socket.on('detection', (message) => {
+        const det = buildDetection(message);
+        if (!det) return;
+
+        // Insertar al principio para que la lista quede en orden
+        // cronológico inverso (más reciente primero)
+        detections.unshift(det);
+
+        // Redibujar todas las capas que dependen de detections[]
+        renderBirdMarkers();
+        renderHeatmaps();
+        renderDetectionList();
+        renderStats();
+
+        // Si el panel de detalle está abierto, refrescar
+        if (document.getElementById('detail-panel').classList.contains('open')) {
+            updateDetailPanel();
         }
     });
-
-    socket.on('detection', async (message) => {
-        printDetection(message);
-        aaaa();
-        updateFeedback(message);
-    });
-
 }
 
-function updateFeedback(detection) {
-    const objectInfo = {
-        "cat": { text: "Meow!", gif: "cat.webp" },
-        "cell phone": { text: "Stay connected", gif: "phone.webp" },
-        "clock": { text: "Time to go", gif: "clock.webp" },
-        "cup": { text: "Need a break?", gif: "cup.webp" },
-        "dog": { text: "Walkies?", gif: "dog.webp" },
-        "potted plant": { text: "Glow your ideas!", gif: "plant.webp" },
-        "rubber-ducky": { text: "Cuak", gif: "duck.webp"}
+// ── Construye un objeto de detección compatible con v5 ────────
+/**
+ * @param {{ content: string, confidence: number, timestamp: string }} msg
+ * @returns {{ id, timestamp, species, lat, lng, confidence } | null}
+ */
+function buildDetection(msg) {
+    const KNOWN = new Set(['cotorra', 'gorrion']);
+    const species = (msg.content || '').trim().toLowerCase();
+
+    if (!KNOWN.has(species)) return null;
+
+    const confidence = parseFloat(msg.confidence);
+    if (isNaN(confidence)) return null;
+
+    // El Arduino no envía coordenadas GPS; situamos la detección
+    // cerca de la caseta con un pequeño desplazamiento aleatorio
+    // (~±15 m) para que cada punto sea visible en el mapa.
+    const jitter = () => (Math.random() - 0.5) * 0.00027; // ≈15 m
+    const lat = DEVICE.lat + jitter();
+    const lng = DEVICE.lng + jitter();
+
+    _rtDetCount++;
+
+    return {
+        id:         `rt-${String(_rtDetCount).padStart(4, '0')}`,
+        timestamp:  new Date(msg.timestamp || Date.now()),
+        species,
+        lat,
+        lng,
+        confidence
     };
+}
 
-    if (detection && objectInfo[detection.content]) {
-        const info = objectInfo[detection.content];
-        const confidence = Math.floor(detection.confidence * 100);
-        feedbackContentElement.innerHTML = `
-            <div class="feedback-detection">
-                <div class="percentage">${confidence}%</div>
-                <img src="img/${info.gif}" alt="${detection.content}">
-                <p>${info.text}</p>
-            </div>
-        `;
+// ── Actualiza el estado del sistema en el sidebar ─────────────
+function setSysStatus(state) {
+    const pill  = document.getElementById('sys-pill');
+    const label = document.getElementById('sys-label');
+    if (!pill || !label) return;
+
+    if (state === 'online') {
+        pill.classList.remove('offline');
+        label.textContent = 'Sistema activo';
     } else {
-        feedbackContentElement.innerHTML = `
-            <img src="img/stars.svg" alt="Stars">
-            <p class="feedback-text">System response will appear here</p>
-        `;
+        pill.classList.add('offline');
+        label.textContent = 'Conexión perdida';
     }
 }
 
-function printDetection(newDetection) {
-    scans.unshift(newDetection);
-    if (scans.length > MAX_RECENT_SCANS) { scans.pop(); }
-}
-
-// Function to render the list of scans
-function renderDetections() {
-    // Clear the list
-    recentDetectionsElement.innerHTML = ``;
-
-    if (scans.length === 0) {
-        recentDetectionsElement.innerHTML = `
-            <div class="no-recent-scans">
-                <img src="./img/no-face.svg">
-                No object detected yet
-            </div>
-        `;
-        return;
-    }
-
-    scans.forEach((scan) => {
-        const row = document.createElement('div');
-        row.className = 'scan-container';
-
-        // Create a container for content and time
-        const cellContainer = document.createElement('span');
-        cellContainer.className = 'scan-cell-container cell-border';
-
-        // Content (text + icon)
-        const contentText = document.createElement('span');
-        contentText.className = 'scan-content';
-		const value = scan.confidence;
-		const result = Math.floor(value * 1000) / 10;
-        contentText.innerHTML = `${result}% - ${scan.content}`;
-
-        // Time
-        const timeText = document.createElement('span');
-        timeText.className = 'scan-content-time';
-        timeText.textContent = new Date(scan.timestamp).toLocaleString('it-IT').replace(',', ' -');
-
-        // Append content and time to the container
-        cellContainer.appendChild(contentText);
-        cellContainer.appendChild(timeText);
-
-        row.appendChild(cellContainer);
-        recentDetectionsElement.appendChild(row);
-    });
-}
-
-
+// ── Control de umbral de confianza ───────────────────────────
+/**
+ * Si el HTML incluye los elementos del slider (confidenceSlider,
+ * confidenceInput, confidenceValueDisplay, sliderProgress,
+ * confidenceResetButton) el control queda completamente funcional
+ * y emite 'override_th' al backend.
+ * Si los elementos no existen (como en v5 por defecto) las
+ * funciones simplemente no hacen nada, sin generar errores.
+ */
 function initializeConfidenceSlider() {
-    const confidenceSlider = document.getElementById('confidenceSlider');
-    const confidenceInput = document.getElementById('confidenceInput');
+    const confidenceSlider      = document.getElementById('confidenceSlider');
+    const confidenceInput       = document.getElementById('confidenceInput');
     const confidenceResetButton = document.getElementById('confidenceResetButton');
+
+    if (!confidenceSlider || !confidenceInput) return; // elementos opcionales
 
     confidenceSlider.addEventListener('input', updateConfidenceDisplay);
     confidenceInput.addEventListener('input', handleConfidenceInputChange);
     confidenceInput.addEventListener('blur', validateConfidenceInput);
     updateConfidenceDisplay();
 
-    confidenceResetButton.addEventListener('click', (e) => {
-        if (e.target.classList.contains('reset-icon') || e.target.closest('.reset-icon')) {
-            resetConfidence();
-        }
-    });
+    if (confidenceResetButton) {
+        confidenceResetButton.addEventListener('click', (e) => {
+            if (e.target.classList.contains('reset-icon') || e.target.closest('.reset-icon')) {
+                resetConfidence();
+            }
+        });
+    }
 }
 
 function handleConfidenceInputChange() {
-    const confidenceInput = document.getElementById('confidenceInput');
+    const confidenceInput  = document.getElementById('confidenceInput');
     const confidenceSlider = document.getElementById('confidenceSlider');
+    if (!confidenceInput || !confidenceSlider) return;
 
     let value = parseFloat(confidenceInput.value);
-
     if (isNaN(value)) value = 0.5;
-    if (value < 0) value = 0;
-    if (value > 1) value = 1;
+    if (value < 0)    value = 0;
+    if (value > 1)    value = 1;
 
     confidenceSlider.value = value;
     updateConfidenceDisplay();
@@ -178,43 +149,59 @@ function handleConfidenceInputChange() {
 
 function validateConfidenceInput() {
     const confidenceInput = document.getElementById('confidenceInput');
-    let value = parseFloat(confidenceInput.value);
+    if (!confidenceInput) return;
 
+    let value = parseFloat(confidenceInput.value);
     if (isNaN(value)) value = 0.5;
-    if (value < 0) value = 0;
-    if (value > 1) value = 1;
+    if (value < 0)    value = 0;
+    if (value > 1)    value = 1;
 
     confidenceInput.value = value.toFixed(2);
-
     handleConfidenceInputChange();
 }
 
 function updateConfidenceDisplay() {
-    const confidenceSlider = document.getElementById('confidenceSlider');
-    const confidenceInput = document.getElementById('confidenceInput');
+    const confidenceSlider      = document.getElementById('confidenceSlider');
+    const confidenceInput       = document.getElementById('confidenceInput');
     const confidenceValueDisplay = document.getElementById('confidenceValueDisplay');
-    const sliderProgress = document.getElementById('sliderProgress');
+    const sliderProgress        = document.getElementById('sliderProgress');
+
+    if (!confidenceSlider) return;
 
     const value = parseFloat(confidenceSlider.value);
-    socket.emit('override_th', value); // Send confidence to backend
-    const percentage = (value - confidenceSlider.min) / (confidenceSlider.max - confidenceSlider.min) * 100;
+    socket.emit('override_th', value); // Envía umbral al backend
 
+    const percentage  = (value - confidenceSlider.min) / (confidenceSlider.max - confidenceSlider.min) * 100;
     const displayValue = value.toFixed(2);
-    confidenceValueDisplay.textContent = displayValue;
 
-    if (document.activeElement !== confidenceInput) {
+    if (confidenceValueDisplay) {
+        confidenceValueDisplay.textContent = displayValue;
+        confidenceValueDisplay.style.left  = percentage + '%';
+    }
+    if (confidenceInput && document.activeElement !== confidenceInput) {
         confidenceInput.value = displayValue;
     }
-
-    sliderProgress.style.width = percentage + '%';
-    confidenceValueDisplay.style.left = percentage + '%';
+    if (sliderProgress) {
+        sliderProgress.style.width = percentage + '%';
+    }
 }
 
 function resetConfidence() {
     const confidenceSlider = document.getElementById('confidenceSlider');
-    const confidenceInput = document.getElementById('confidenceInput');
+    const confidenceInput  = document.getElementById('confidenceInput');
+    if (!confidenceSlider) return;
 
     confidenceSlider.value = '0.5';
-    confidenceInput.value = '0.50';
+    if (confidenceInput) confidenceInput.value = '0.50';
     updateConfidenceDisplay();
 }
+
+// ── Bug fix v5: resize listener faltante ─────────────────────
+// En v5 el cuerpo del handler de resize estaba huérfano;
+// aquí lo registramos correctamente.
+window.addEventListener('resize', () => {
+    if (typeof map !== 'undefined') map.invalidateSize();
+    if (document.getElementById('second-view').classList.contains('open')) {
+        if (typeof resizeSim === 'function') resizeSim();
+    }
+});
